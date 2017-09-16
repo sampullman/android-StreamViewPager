@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    style="@style/linear_vertical_full"
+    tools:context="com.sampullman.pagersample.SampleActivity">
+
+    <TextView
+        style="@style/view_wide"
+        android:gravity="center"
+        android:textSize="22sp"
+        android:text="StreamViewPager Samples" />
+
+    <FrameLayout
+        style="@style/view_wide">
+        <Button
+            android:id="@+id/infinite"
+            style="@style/view_wrap"
+            android:layout_gravity="center"
+            android:text="Infinite Pager" />
+    </FrameLayout>
+
+    <FrameLayout
+        style="@style/view_wide">
+        <Button
+            android:id="@+id/long_load"
+            style="@style/view_wrap"
+            android:layout_gravity="center"
+            android:text="Long Load Pager" />
+    </FrameLayout>
+
+    <View style="@style/view_wide" />
+
+    <View style="@style/view_wide" />
+
+</LinearLayout>
