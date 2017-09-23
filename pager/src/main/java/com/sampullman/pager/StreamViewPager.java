@@ -23,7 +23,6 @@ import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.support.v4.view.KeyEventCompat;
 import android.support.v4.view.MotionEventCompat;
-import android.support.v4.view.PagerAdapter;
 import android.support.v4.view.VelocityTrackerCompat;
 import android.support.v4.view.ViewCompat;
 import android.support.v4.view.ViewConfigurationCompat;
@@ -44,7 +43,7 @@ import android.view.animation.Interpolator;
 import android.widget.Scroller;
 import java.util.ArrayList;
 
-public class StreamViewPager extends ViewGroup {
+public class StreamViewPager<T> extends ViewGroup {
     private static final String TAG = "ViewPager";
     private static final boolean DEBUG = true;
     private static final boolean USE_CACHE = false;
@@ -52,12 +51,16 @@ public class StreamViewPager extends ViewGroup {
     private static final int MAX_SETTLE_DURATION = 600; // ms
     private static final int MIN_DISTANCE_FOR_FLING = 25; // dips
     private static final int DEFAULT_GUTTER_SIZE = 16; // dips
-    static class ItemInfo {
+    static class ItemInfo<T> {
         Object object;
-        int position;
+        T id;
         boolean scrolling;
         float widthFactor;
         float offset;
+    }
+    // Ror determining whether an Id is before or after another Id
+    private enum IdPosition {
+        BEFORE, EQUAL, AFTER
     }
 
     private static final Interpolator interpolator = new Interpolator() {
@@ -66,11 +69,11 @@ public class StreamViewPager extends ViewGroup {
             return t * t * t * t * t + 1.0f;
         }
     };
-    private final ArrayList<ItemInfo> items = new ArrayList<>();
-    private final ItemInfo tempItem = new ItemInfo();
+    private final ArrayList<ItemInfo<T>> items = new ArrayList<>();
+    private final ItemInfo<T> tempItem = new ItemInfo<>();
     private final Rect tempRect = new Rect();
-    private PagerAdapter adapter;
-    private int curItem;   // Index of currently displayed page.
+    private StreamViewAdapter<T> adapter;
+    private T curItemId;   // Index of currently displayed page.
     private Scroller scroller;
     private int pageMargin;
     private Drawable marginDrawable;
@@ -116,7 +119,7 @@ public class StreamViewPager extends ViewGroup {
     private EdgeEffectCompat rightEdge;
     private boolean firstLayout = true;
     private boolean calledSuper;
-    private OnPageChangeListener pageChangeListener;
+    private OnPageChangeListener<T> pageChangeListener;
 
     // Indicates that the pager is fully in view and no animation is in progress.
     public static final int SCROLL_STATE_IDLE = 0;
@@ -170,72 +173,75 @@ public class StreamViewPager extends ViewGroup {
     }
 
     /** Set a PagerAdapter that will supply views for this pager as needed. */
-    public void setAdapter(PagerAdapter adapter) {
+    public void setAdapter(StreamViewAdapter<T> adapter) {
         if (this.adapter != null) {
-            for (int i = 0; i < items.size(); i++) {
-                final ItemInfo ii = items.get(i);
-                this.adapter.destroyItem(this, ii.position, ii.object);
-            }
             items.clear();
             removeAllViews();
-            curItem = 0;
             scrollTo(0, 0);
         }
         this.adapter = adapter;
         if (this.adapter != null) {
+            curItemId = adapter.initialViewId();
             populatePending = false;
             firstLayout = true;
             populate();
         }
     }
 
-    public PagerAdapter getAdapter() {
+    public StreamViewAdapter<T> getAdapter() {
         return adapter;
     }
 
-    public int getCurrentItem() {
-        return curItem;
+    public T getCurrentViewId() {
+        return curItemId;
     }
 
     /** Set the currently selected page. If the first layout has already occured,
      * there will be a smooth animated transition between the current item and the new item.
      *
-     * @param item Item index to select
+     * @param id Item id to select
      */
-    public void setCurrentItem(int item) {
-        setCurrentItem(item, !firstLayout);
+    public void setCurrentItem(T id) {
+        setCurrentItem(id, !firstLayout);
     }
 
     /** Set the currently selected page.
      *
-     * @param item Item index to select
+     * @param id Item id to select
      * @param smoothScroll True to smoothly scroll to the new item, false to transition immediately
      */
-    public void setCurrentItem(int item, boolean smoothScroll) {
+    public void setCurrentItem(T id, boolean smoothScroll) {
         populatePending = false;
-        setCurrentItemInternal(item, smoothScroll, false);
+        setCurrentItemInternal(id, smoothScroll, false);
     }
 
-    void setCurrentItemInternal(int item, boolean smoothScroll, boolean always) {
-        setCurrentItemInternal(item, smoothScroll, always, 0);
+    void setCurrentItemInternal(T id, boolean smoothScroll, boolean always) {
+        setCurrentItemInternal(id, smoothScroll, always, 0);
     }
 
-    void setCurrentItemInternal(int item, boolean smoothScroll, boolean always, int velocity) {
-        if (adapter == null || adapter.getCount() <= 0) {
+    boolean idWithinPageLimit(T id) {
+        if(id == null) {
+            return false;
+        }
+        for (ItemInfo info : items) {
+            if(id.equals(info.id)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void setCurrentItemInternal(T id, boolean smoothScroll, boolean always, int velocity) {
+        if (id == null || adapter == null || !adapter.hasAtLeastOneItem()) {
             setScrollingCacheEnabled(false);
             return;
         }
-        if (!always && curItem == item && items.size() != 0) {
+        if (!always && id.equals(curItemId) && items.size() != 0) {
             setScrollingCacheEnabled(false);
             return;
-        }
-        if (item < 0) {
-            item = 0;
-        } else if (item >= adapter.getCount()) {
-            item = adapter.getCount() - 1;
         }
         final int pageLimit = offscreenPageLimit;
-        if (item > (curItem + pageLimit) || item < (curItem - pageLimit)) {
+        if (!idWithinPageLimit(id)) {
             // We are doing a jump by more than one page.  To avoid
             // glitches, we want to keep all current pages in the view
             // until the scroll ends.
@@ -243,9 +249,9 @@ public class StreamViewPager extends ViewGroup {
                 items.get(i).scrolling = true;
             }
         }
-        final boolean dispatchSelected = curItem != item;
-        populate(item);
-        final ItemInfo curInfo = infoForPosition(item);
+        final boolean dispatchSelected = id.equals(curItemId);
+        populate(id);
+        final ItemInfo curInfo = infoForId(id);
         int destX = 0;
         if (curInfo != null) {
             final int width = getWidth();
@@ -255,11 +261,11 @@ public class StreamViewPager extends ViewGroup {
         if (smoothScroll) {
             smoothScrollTo(destX, 0, velocity);
             if (dispatchSelected && pageChangeListener != null) {
-                pageChangeListener.onPageSelected(item);
+                pageChangeListener.onPageSelected(id);
             }
         } else {
             if (dispatchSelected && pageChangeListener != null) {
-                pageChangeListener.onPageSelected(item);
+                pageChangeListener.onPageSelected(id);
             }
             completeScroll();
             scrollTo(destX, 0);
@@ -295,6 +301,7 @@ public class StreamViewPager extends ViewGroup {
      *
      * @param limit How many pages will be kept offscreen in an idle state.
      */
+    // TODO -- update for new zeitgeist
     public void setOffscreenPageLimit(int limit) {
         if (limit < DEFAULT_OFFSCREEN_PAGES) {
             limit = DEFAULT_OFFSCREEN_PAGES;
@@ -395,7 +402,7 @@ public class StreamViewPager extends ViewGroup {
         if (velocity > 0) {
             duration = 4 * Math.round(1000 * Math.abs(distance / velocity));
         } else {
-            final float pageWidth = width * adapter.getPageWidth(curItem);
+            final float pageWidth = width * adapter.getPageWidth(curItemId);
             final float pageDelta = (float) Math.abs(dx) / (pageWidth + pageMargin);
             duration = (int) ((pageDelta + 1) * 100);
         }
@@ -404,11 +411,11 @@ public class StreamViewPager extends ViewGroup {
         ViewCompat.postInvalidateOnAnimation(this);
     }
 
-    ItemInfo addNewItem(int position, int index) {
-        ItemInfo ii = new ItemInfo();
-        ii.position = position;
-        ii.object = adapter.instantiateItem(this, position);
-        ii.widthFactor = adapter.getPageWidth(position);
+    ItemInfo<T> addNewItem(T id, int index) {
+        ItemInfo<T> ii = new ItemInfo<>();
+        ii.id = id;
+        ii.object = adapter.instantiateItem(this, id);
+        ii.widthFactor = adapter.getPageWidth(id);
         if (index < 0 || index >= items.size()) {
             items.add(ii);
         } else {
@@ -416,15 +423,42 @@ public class StreamViewPager extends ViewGroup {
         }
         return ii;
     }
+    private IdPosition relativePosition(T id1, T id2) {
+        int mark1 = -1, mark2 = -1;
+        for(int i=0; i<items.size(); i+=1) {
+            ItemInfo<T> item = items.get(i);
+            if(mark1 == -1 && id1.equals(item.id)) {
+                mark1 = i;
+            } else if(mark2 == -1 && id2.equals(item.id)) {
+                mark2 = i;
+            } else if(mark1 == -1 && mark2 == -1) {
+                break;
+            }
+        }
+        if(mark1 == -1 || mark2 == -1 || mark1 == mark2) {
+            return IdPosition.EQUAL;
+        } else if(mark1 < mark2) {
+            return IdPosition.BEFORE;
+        } else {
+            return IdPosition.AFTER;
+        }
+    }
 
     void populate() {
-        populate(curItem);
+        populate(curItemId);
     }
-    void populate(int newCurrentItem) {
-        ItemInfo oldCurInfo = null;
-        if (curItem != newCurrentItem) {
-            oldCurInfo = infoForPosition(curItem);
-            curItem = newCurrentItem;
+    void populate(T newCurrentId) {
+        if(curItemId == null) {
+            return;
+        }
+        ItemInfo<T> oldCurInfo = null;
+        IdPosition oldPos = IdPosition.EQUAL;
+        if (!curItemId.equals(newCurrentId)) {
+            oldCurInfo = infoForId(curItemId);
+            if(oldCurInfo != null) {
+                oldPos = relativePosition(curItemId, newCurrentId);
+            }
+            curItemId = newCurrentId;
         }
         if (adapter == null) {
             return;
@@ -441,22 +475,18 @@ public class StreamViewPager extends ViewGroup {
         if (getWindowToken() == null) {
             return;
         }
-        final int pageLimit = offscreenPageLimit;
-        final int startPos = Math.max(0, curItem - pageLimit);
-        final int N = adapter.getCount();
-        final int endPos = Math.min(N-1, curItem + pageLimit);
         // Locate the currently focused item or add it if needed.
         int curIndex = -1;
-        ItemInfo curItem = null;
+        ItemInfo<T> curItem = null;
         for (curIndex = 0; curIndex < items.size(); curIndex++) {
-            final ItemInfo ii = items.get(curIndex);
-            if (ii.position >= this.curItem) {
-                if (ii.position == this.curItem) curItem = ii;
+            final ItemInfo<T> ii = items.get(curIndex);
+            if (this.curItemId.equals(ii.id)) {
+                curItem = ii;
                 break;
             }
         }
-        if (curItem == null && N > 0) {
-            curItem = addNewItem(this.curItem, curIndex);
+        if (curItem == null && adapter.hasAtLeastOneItem()) {
+            curItem = addNewItem(this.curItemId, curIndex);
         }
         // Fill 3x the available width or up to the number of offscreen
         // pages requested to either side, whichever is larger.
@@ -466,61 +496,70 @@ public class StreamViewPager extends ViewGroup {
             int itemIndex = curIndex - 1;
             ItemInfo ii = itemIndex >= 0 ? items.get(itemIndex) : null;
             final float leftWidthNeeded = 2.f - curItem.widthFactor;
-            for (int pos = this.curItem - 1; pos >= 0; pos--) {
-                if (extraWidthLeft >= leftWidthNeeded && pos < startPos) {
+            T idIter = adapter.prevId(this.curItemId);
+            int iterCount = 0;
+            while(idIter != null) {
+                if (extraWidthLeft >= leftWidthNeeded && (iterCount >= offscreenPageLimit)) {
                     if (ii == null) {
                         break;
                     }
-                    if (pos == ii.position && !ii.scrolling) {
+                    // Destroy any items that need destroyin' (too far off screen due to scroll)
+                    if (idIter.equals(ii.id) && !ii.scrolling) {
                         items.remove(itemIndex);
-                        adapter.destroyItem(this, pos, ii.object);
+                        adapter.destroyItem(this, idIter, ii.object);
                         itemIndex--;
                         curIndex--;
                         ii = itemIndex >= 0 ? items.get(itemIndex) : null;
                     }
-                } else if (ii != null && pos == ii.position) {
+                } else if (ii != null && idIter.equals(ii.id)) {
                     extraWidthLeft += ii.widthFactor;
                     itemIndex--;
                     ii = itemIndex >= 0 ? items.get(itemIndex) : null;
                 } else {
-                    ii = addNewItem(pos, itemIndex + 1);
+                    ii = addNewItem(idIter, itemIndex + 1);
                     extraWidthLeft += ii.widthFactor;
                     curIndex++;
                     ii = itemIndex >= 0 ? items.get(itemIndex) : null;
                 }
+                idIter = adapter.prevId(idIter);
+                iterCount += 1;
             }
             float extraWidthRight = curItem.widthFactor;
             itemIndex = curIndex + 1;
             if (extraWidthRight < 2.f) {
                 ii = itemIndex < items.size() ? items.get(itemIndex) : null;
-                for (int pos = this.curItem + 1; pos < N; pos++) {
-                    if (extraWidthRight >= 2.f && pos > endPos) {
+                idIter = adapter.nextId(this.curItemId);
+                iterCount = 0;
+                while(idIter != null) {
+                    if (extraWidthRight >= 2.f && (iterCount >= offscreenPageLimit)) {
                         if (ii == null) {
                             break;
                         }
-                        if (pos == ii.position && !ii.scrolling) {
+                        if (idIter.equals(ii.id) && !ii.scrolling) {
                             items.remove(itemIndex);
-                            adapter.destroyItem(this, pos, ii.object);
+                            adapter.destroyItem(this, idIter, ii.object);
                             ii = itemIndex < items.size() ? items.get(itemIndex) : null;
                         }
-                    } else if (ii != null && pos == ii.position) {
+                    } else if (ii != null && idIter.equals(ii.id)) {
                         extraWidthRight += ii.widthFactor;
                         itemIndex++;
                         ii = itemIndex < items.size() ? items.get(itemIndex) : null;
                     } else {
-                        ii = addNewItem(pos, itemIndex);
+                        ii = addNewItem(idIter, itemIndex);
                         itemIndex++;
                         extraWidthRight += ii.widthFactor;
                         ii = itemIndex < items.size() ? items.get(itemIndex) : null;
                     }
+                    idIter = adapter.nextId(idIter);
+                    iterCount += 1;
                 }
             }
-            calculatePageOffsets(curItem, curIndex, oldCurInfo);
+            calculatePageOffsets(curItem, curIndex, oldCurInfo, oldPos);
         }
         if (DEBUG) {
             Log.i(TAG, "Current page list:");
             for (int i = 0; i< items.size(); i++) {
-                Log.i(TAG, "#" + i + ": page " + items.get(i).position);
+                Log.i(TAG, "#" + i + ": page " + items.get(i).id);
             }
         }
         // Check width measurement of current pages. Update StreamPagerLayoutParams as needed.
@@ -539,11 +578,11 @@ public class StreamViewPager extends ViewGroup {
         if (hasFocus()) {
             View currentFocused = findFocus();
             ItemInfo ii = currentFocused != null ? infoForAnyChild(currentFocused) : null;
-            if (ii == null || ii.position != this.curItem) {
+            if (ii == null || !ii.id.equals(this.curItemId)) {
                 for (int i=0; i<getChildCount(); i++) {
                     View child = getChildAt(i);
                     ii = infoForChild(child);
-                    if (ii != null && ii.position == this.curItem) {
+                    if (ii != null && ii.id.equals(this.curItemId)) {
                         if (child.requestFocus(FOCUS_FORWARD)) {
                             break;
                         }
@@ -552,82 +591,93 @@ public class StreamViewPager extends ViewGroup {
             }
         }
     }
-    private void calculatePageOffsets(ItemInfo curItem, int curIndex, ItemInfo oldCurInfo) {
-        final int N = adapter.getCount();
+    private void calculatePageOffsets(ItemInfo<T> curItem, int curIndex, ItemInfo<T> oldCurInfo, IdPosition oldPos) {
         final int width = getWidth();
         final float marginOffset = width > 0 ? (float) pageMargin / width : 0;
         // Fix up offsets for later layout.
         if (oldCurInfo != null) {
-            final int oldCurPosition = oldCurInfo.position;
+            final T oldCurId = oldCurInfo.id;
             // Base offsets off of oldCurInfo.
-            if (oldCurPosition < curItem.position) {
+            if (oldPos == IdPosition.BEFORE) {
                 int itemIndex = 0;
                 ItemInfo ii;
                 float offset = oldCurInfo.offset + oldCurInfo.widthFactor + marginOffset;
-                for (int pos = oldCurPosition + 1;
-                     pos <= curItem.position && itemIndex < items.size(); pos++) {
+
+                T id = adapter.nextId(oldCurId);
+                while(id != null && itemIndex < items.size()) {
+
                     ii = items.get(itemIndex);
-                    while (pos > ii.position && itemIndex < items.size() - 1) {
+                    while (!id.equals(ii.id) && itemIndex < items.size() - 1) {
                         itemIndex++;
                         ii = items.get(itemIndex);
                     }
-                    while (pos < ii.position) {
+                    while (id != null && !id.equals(ii.id)) {
                         // We don't have an item populated for this,
                         // ask the adapter for an offset.
-                        offset += adapter.getPageWidth(pos) + marginOffset;
-                        pos++;
+                        offset += adapter.getPageWidth(id) + marginOffset;
+                        id = adapter.nextId(id);
                     }
                     ii.offset = offset;
                     offset += ii.widthFactor + marginOffset;
+
+                    if(id == null || id.equals(curItem.id)) break;
+                    id = adapter.nextId(id);
                 }
-            } else if (oldCurPosition > curItem.position) {
+            } else if (oldPos == IdPosition.AFTER) {
                 int itemIndex = items.size() - 1;
                 ItemInfo ii;
                 float offset = oldCurInfo.offset;
-                for (int pos = oldCurPosition - 1;
-                     pos >= curItem.position && itemIndex >= 0; pos--) {
+                T id = adapter.prevId(oldCurId);
+                while(id != null && itemIndex >= 0) {
                     ii = items.get(itemIndex);
-                    while (pos < ii.position && itemIndex > 0) {
+                    while (!id.equals(ii.id) && itemIndex > 0) {
                         itemIndex--;
                         ii = items.get(itemIndex);
                     }
-                    while (pos > ii.position) {
+                    while (id != null && !id.equals(ii.id)) {
                         // We don't have an item populated for this,
                         // ask the adapter for an offset.
-                        offset -= adapter.getPageWidth(pos) + marginOffset;
-                        pos--;
+                        offset -= adapter.getPageWidth(id) + marginOffset;
+                        id = adapter.prevId(id);
                     }
                     offset -= ii.widthFactor + marginOffset;
                     ii.offset = offset;
+
+                    if(id == null || id.equals(curItem.id)) break;
+                    id = adapter.prevId(id);
                 }
             }
         }
-        // Base all offsets off of curItem.
+        // Base all offsets off of curItemId.
         final int itemCount = items.size();
         float offset = curItem.offset;
-        int pos = curItem.position - 1;
-        firstOffset = curItem.position == 0 ? curItem.offset : -Float.MAX_VALUE;
-        lastOffset = curItem.position == N - 1 ?
+        T prevId = adapter.prevId(curItem.id);
+        T nextId = adapter.nextId(curItem.id);
+        firstOffset = (prevId == null) ? curItem.offset : -Float.MAX_VALUE;
+        lastOffset = (nextId == null) ?
                 curItem.offset + curItem.widthFactor - 1 : Float.MAX_VALUE;
         // Previous pages
-        for (int i = curIndex - 1; i >= 0; i--, pos--) {
+        for (int i = curIndex - 1; i >= 0 && prevId != null; i--, prevId=adapter.prevId(prevId)) {
             final ItemInfo ii = items.get(i);
-            while (pos > ii.position) {
-                offset -= adapter.getPageWidth(pos--) + marginOffset;
+            while (prevId != null && !prevId.equals(ii.id)) {
+
+                offset -= adapter.getPageWidth(prevId) + marginOffset;
+                prevId = adapter.prevId(prevId);
             }
             offset -= ii.widthFactor + marginOffset;
             ii.offset = offset;
-            if (ii.position == 0) firstOffset = offset;
+            if (prevId == null) firstOffset = offset;
         }
         offset = curItem.offset + curItem.widthFactor + marginOffset;
-        pos = curItem.position + 1;
         // Next pages
-        for (int i = curIndex + 1; i < itemCount; i++, pos++) {
+        for (int i = curIndex + 1; nextId != null && i < itemCount; i++, nextId =adapter.nextId(nextId)) {
             final ItemInfo ii = items.get(i);
-            while (pos < ii.position) {
-                offset += adapter.getPageWidth(pos++) + marginOffset;
+            while (nextId != null && !nextId.equals(ii.id)) {
+
+                offset += adapter.getPageWidth(nextId) + marginOffset;
+                nextId = adapter.nextId(nextId);
             }
-            if (ii.position == N - 1) {
+            if (nextId == null) {
                 lastOffset = offset + ii.widthFactor - 1;
             }
             ii.offset = offset;
@@ -656,9 +706,8 @@ public class StreamViewPager extends ViewGroup {
         }
     }
 
-    ItemInfo infoForChild(View child) {
-        for (int i = 0; i< items.size(); i++) {
-            ItemInfo ii = items.get(i);
+    ItemInfo<T> infoForChild(View child) {
+        for (ItemInfo<T> ii : items) {
             if (adapter.isViewFromObject(child, ii.object)) {
                 return ii;
             }
@@ -666,7 +715,7 @@ public class StreamViewPager extends ViewGroup {
         return null;
     }
 
-    ItemInfo infoForAnyChild(View child) {
+    ItemInfo<T> infoForAnyChild(View child) {
         ViewParent parent;
         while ((parent=child.getParent()) != this) {
             if (parent == null || !(parent instanceof View)) {
@@ -676,14 +725,28 @@ public class StreamViewPager extends ViewGroup {
         }
         return infoForChild(child);
     }
-    ItemInfo infoForPosition(int position) {
-        for (int i = 0; i < items.size(); i++) {
-            ItemInfo ii = items.get(i);
-            if (ii.position == position) {
+    ItemInfo<T> infoForId(T id) {
+        if(id == null) {
+            return null;
+        }
+        for (ItemInfo<T> ii : items) {
+            if (id.equals(ii.id)) {
                 return ii;
             }
         }
         return null;
+    }
+    int indexForId(T id) {
+        if(id == null) {
+            return -1;
+        }
+        for(int i=0;i<items.size();i+=1) {
+            ItemInfo<T> ii = items.get(i);
+            if (id.equals(ii.id)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     @Override
@@ -746,12 +809,12 @@ public class StreamViewPager extends ViewGroup {
             if (!scroller.isFinished()) {
                 // We now return to your regularly scheduled scroll, already in progress.
                 final int newDuration = scroller.getDuration() - scroller.timePassed();
-                ItemInfo targetInfo = infoForPosition(curItem);
+                ItemInfo targetInfo = infoForId(curItemId);
                 scroller.startScroll(newOffsetPixels, 0,
                         (int) (targetInfo.offset * width), 0, newDuration);
             }
         } else {
-            final ItemInfo ii = infoForPosition(curItem);
+            final ItemInfo ii = infoForId(curItemId);
             final float scrollOffset = ii != null ? Math.min(ii.offset, lastOffset) : 0;
             final int scrollPos = (int) (scrollOffset * width);
             if (scrollPos != getScrollX()) {
@@ -831,23 +894,23 @@ public class StreamViewPager extends ViewGroup {
     private boolean pageScrolled(int xpos) {
         if (items.size() == 0) {
             calledSuper = false;
-            onPageScrolled(0, 0, 0);
+            onPageScrolled(null, 0, 0);
             if (!calledSuper) {
                 throw new IllegalStateException(
                         "onPageScrolled did not call superclass implementation");
             }
             return false;
         }
-        final ItemInfo ii = infoForCurrentScrollPosition();
+        final ItemInfo<T> ii = infoForCurrentScrollPosition();
         final int width = getWidth();
         final int widthWithMargin = width + pageMargin;
         final float marginOffset = (float) pageMargin / width;
-        final int currentPage = ii.position;
+        final T currentId = ii.id;
         final float pageOffset = (((float) xpos / width) - ii.offset) /
                 (ii.widthFactor + marginOffset);
         final int offsetPixels = (int) (pageOffset * widthWithMargin);
         calledSuper = false;
-        onPageScrolled(currentPage, pageOffset, offsetPixels);
+        onPageScrolled(currentId, pageOffset, offsetPixels);
         if (!calledSuper) {
             throw new IllegalStateException(
                     "onPageScrolled did not call superclass implementation");
@@ -862,14 +925,14 @@ public class StreamViewPager extends ViewGroup {
      * (e.g. super.onPageScrolled(position, offset, offsetPixels)) before onPageScrolled
      * returns.
      *
-     * @param position Position index of the first page currently being displayed.
+     * @param id Id of the first page currently being displayed.
      *                 Page position+1 will be visible if positionOffset is nonzero.
      * @param offset Value from [0, 1) indicating the offset from the page at position.
      * @param offsetPixels Value in pixels indicating the offset from position.
      */
-    protected void onPageScrolled(int position, float offset, int offsetPixels) {
+    protected void onPageScrolled(T id, float offset, int offsetPixels) {
         if (pageChangeListener != null) {
-            pageChangeListener.onPageScrolled(position, offset, offsetPixels);
+            pageChangeListener.onPageScrolled(id, offset, offsetPixels);
         }
         calledSuper = true;
     }
@@ -1040,7 +1103,7 @@ public class StreamViewPager extends ViewGroup {
             // descendants.
             return false;
         }
-        if (adapter == null || adapter.getCount() == 0) {
+        if (adapter == null || !adapter.hasAtLeastOneItem()) {
             // Nothing to present or scroll; nothing to touch.
             return false;
         }
@@ -1097,16 +1160,16 @@ public class StreamViewPager extends ViewGroup {
                     populatePending = true;
                     final int width = getWidth();
                     final int scrollX = getScrollX();
-                    final ItemInfo ii = infoForCurrentScrollPosition();
-                    final int currentPage = ii.position;
+                    final ItemInfo<T> ii = infoForCurrentScrollPosition();
+                    final T currentId = ii.id;
                     final float pageOffset = (((float) scrollX / width) - ii.offset) / ii.widthFactor;
                     final int activePointerIndex =
                             MotionEventCompat.findPointerIndex(ev, activePointerId);
                     final float x = MotionEventCompat.getX(ev, activePointerIndex);
                     final int totalDelta = (int) (x - initialMotionX);
-                    int nextPage = determineTargetPage(currentPage, pageOffset, initialVelocity,
+                    T nextId = determineTargetPage(currentId, pageOffset, initialVelocity,
                             totalDelta);
-                    setCurrentItemInternal(nextPage, true, true, initialVelocity);
+                    setCurrentItemInternal(nextId, true, true, initialVelocity);
                     activePointerId = INVALID_POINTER;
                     endDrag();
                     needsInvalidate = leftEdge.onRelease() | rightEdge.onRelease();
@@ -1114,7 +1177,7 @@ public class StreamViewPager extends ViewGroup {
                 break;
             case MotionEvent.ACTION_CANCEL:
                 if (isBeingDragged) {
-                    setCurrentItemInternal(curItem, true, true);
+                    setCurrentItemInternal(curItemId, true, true);
                     activePointerId = INVALID_POINTER;
                     endDrag();
                     needsInvalidate = leftEdge.onRelease() | rightEdge.onRelease();
@@ -1165,13 +1228,13 @@ public class StreamViewPager extends ViewGroup {
         float rightBound = width * lastOffset;
         boolean leftAbsolute = true;
         boolean rightAbsolute = true;
-        final ItemInfo firstItem = items.get(0);
-        final ItemInfo lastItem = items.get(items.size() - 1);
-        if (firstItem.position != 0) {
+        final ItemInfo<T> firstItem = items.get(0);
+        final ItemInfo<T> lastItem = items.get(items.size() - 1);
+        if (adapter.hasPrev(firstItem.id)) {
             leftAbsolute = false;
             leftBound = firstItem.offset * width;
         }
-        if (lastItem.position != adapter.getCount() - 1) {
+        if (adapter.hasNext(lastItem.id)) {
             rightAbsolute = false;
             rightBound = lastItem.offset * width;
         }
@@ -1198,29 +1261,32 @@ public class StreamViewPager extends ViewGroup {
      * @return Info about the page at the current scroll position.
      *         This can be synthetic for a missing middle page; the 'object' field can be null.
      */
-    private ItemInfo infoForCurrentScrollPosition() {
+    private ItemInfo<T> infoForCurrentScrollPosition() {
         final int width = getWidth();
         final float scrollOffset = width > 0 ? (float) getScrollX() / width : 0;
         final float marginOffset = width > 0 ? (float) pageMargin / width : 0;
+        /*
         int lastPos = -1;
         float lastOffset = 0.f;
         float lastWidth = 0.f;
+        */
         boolean first = true;
-        ItemInfo lastItem = null;
+        ItemInfo<T> lastItem = null;
         for (int i = 0; i < items.size(); i++) {
-            ItemInfo ii = items.get(i);
-            float offset;
+            ItemInfo<T> ii = items.get(i);
+            // TODO -- assuming this is impossible now. should double check
+            /*
             if (!first && ii.position != lastPos + 1) {
                 // Create a synthetic item for a missing page.
                 ii = tempItem;
                 ii.offset = lastOffset + lastWidth + marginOffset;
                 ii.position = lastPos + 1;
-                ii.widthFactor = adapter.getPageWidth(ii.position);
+                ii.widthFactor = adapter.getPageWidth(ii.id);
                 i--;
             }
-            offset = ii.offset;
-            final float leftBound = offset;
-            final float rightBound = offset + ii.widthFactor + marginOffset;
+            */
+            final float leftBound = ii.offset;
+            final float rightBound = ii.offset + ii.widthFactor + marginOffset;
             if (first || scrollOffset >= leftBound) {
                 if (scrollOffset < rightBound || i == items.size() - 1) {
                     return ii;
@@ -1229,27 +1295,58 @@ public class StreamViewPager extends ViewGroup {
                 return lastItem;
             }
             first = false;
+            /*
             lastPos = ii.position;
-            lastOffset = offset;
+            lastOffset = ii.offset;
             lastWidth = ii.widthFactor;
+            */
             lastItem = ii;
         }
         return lastItem;
     }
-    private int determineTargetPage(int currentPage, float pageOffset, int velocity, int deltaX) {
-        int targetPage;
+    private T determineTargetPage(T currentId, float pageOffset, int velocity, int deltaX) {
+        /*
+        T targetId;
         if (Math.abs(deltaX) > flingDistance && Math.abs(velocity) > minimumVelocity) {
-            targetPage = velocity > 0 ? currentPage : currentPage + 1;
+            targetId = velocity > 0 ? currentId : adapter.nextId(currentId);
         } else {
-            targetPage = (int) (currentPage + pageOffset + 0.5f);
+            int distance = (int)(pageOffset + 0.5f);
+            int dir = (distance < 0) ? 1 : -1;
+            targetId = currentId;
+            while(distance != 0 && targetId != null) {
+                targetId = (dir == 1) ? adapter.nextId(targetId) : adapter.prevId(targetId);
+                distance += dir;
+            }
         }
         if (items.size() > 0) {
             final ItemInfo firstItem = items.get(0);
             final ItemInfo lastItem = items.get(items.size() - 1);
             // Only let the user target pages we have items for
-            targetPage = Math.max(firstItem.position, Math.min(targetPage, lastItem.position));
+            targetId = Math.max(firstItem.position, Math.min(targetPage, lastItem.position));
         }
-        return targetPage;
+        return targetId;
+        */
+        int index = indexForId(currentId);
+        T targetId = currentId;
+        int distance = (int)(pageOffset + 0.5f);
+
+        if (Math.abs(deltaX) > flingDistance && Math.abs(velocity) > minimumVelocity) {
+            if(index + 1 < items.size()) {
+                targetId = velocity > 0 ? currentId : adapter.nextId(currentId);
+            }
+        } else {
+            int dir = (distance < 0) ? 1 : -1;
+            targetId = currentId;
+            while(distance != 0 && targetId != null) {
+                int targetIndex = index + (dir * -1);
+                if(targetIndex < 0 || targetIndex >= items.size()) {
+                    break;
+                }
+                targetId = (dir == 1) ? adapter.nextId(targetId) : adapter.prevId(targetId);
+                distance += dir;
+            }
+        }
+        return targetId;
     }
     @Override
     public void draw(Canvas canvas) {
@@ -1258,7 +1355,7 @@ public class StreamViewPager extends ViewGroup {
         final int overScrollMode = ViewCompat.getOverScrollMode(this);
         if (overScrollMode == ViewCompat.OVER_SCROLL_ALWAYS ||
                 (overScrollMode == ViewCompat.OVER_SCROLL_IF_CONTENT_SCROLLS &&
-                        adapter != null && adapter.getCount() > 1)) {
+                        adapter != null && adapter.hasAtLeastOneItem())) {
             if (!leftEdge.isFinished()) {
                 final int restoreCount = canvas.save();
                 final int height = getHeight() - getPaddingTop() - getPaddingBottom();
@@ -1296,17 +1393,15 @@ public class StreamViewPager extends ViewGroup {
             final int scrollX = getScrollX();
             final int width = getWidth();
             final float marginOffset = (float) pageMargin / width;
-            int itemIndex = 0;
-            ItemInfo ii = items.get(0);
-            float offset = ii.offset;
+            float offset = items.get(0).offset;
+
             final int itemCount = items.size();
-            final int firstPos = ii.position;
-            final int lastPos = items.get(itemCount - 1).position;
-            for (int pos = firstPos; pos < lastPos; pos++) {
-                while (pos > ii.position && itemIndex < itemCount) {
-                    ii = items.get(++itemIndex);
-                }
+            final T firstId = items.get(0).id;
+            final T lastId = items.get(itemCount - 1).id;
+            for (int i = 0; i < items.size(); i++) {
+                ItemInfo<T> ii = items.get(i);
                 float drawAt;
+                /* TODO -- We thinks this is unnecessary, better to test though
                 if (pos == ii.position) {
                     drawAt = (ii.offset + ii.widthFactor) * width;
                     offset = ii.offset + ii.widthFactor + marginOffset;
@@ -1315,6 +1410,10 @@ public class StreamViewPager extends ViewGroup {
                     drawAt = (offset + widthFactor) * width;
                     offset += widthFactor + marginOffset;
                 }
+                */
+                drawAt = (ii.offset + ii.widthFactor) * width;
+                offset = ii.offset + ii.widthFactor + marginOffset;
+
                 if (drawAt + pageMargin > scrollX) {
                     marginDrawable.setBounds((int) drawAt, topPageBounds,
                             (int) (drawAt + pageMargin + 0.5f), bottomPageBounds);
@@ -1482,15 +1581,17 @@ public class StreamViewPager extends ViewGroup {
         return outRect;
     }
     boolean pageLeft() {
-        if (curItem > 0) {
-            setCurrentItem(curItem -1, true);
+        T prevId = adapter.prevId(curItemId);
+        if (prevId != null) {
+            setCurrentItem(prevId, true);
             return true;
         }
         return false;
     }
     boolean pageRight() {
-        if (adapter != null && curItem < (adapter.getCount()-1)) {
-            setCurrentItem(curItem +1, true);
+        T nextId = adapter.nextId(curItemId);
+        if (adapter != null && adapter.hasNext(curItemId)) {
+            setCurrentItem(nextId, true);
             return true;
         }
         return false;
@@ -1507,7 +1608,7 @@ public class StreamViewPager extends ViewGroup {
                 final View child = getChildAt(i);
                 if (child.getVisibility() == VISIBLE) {
                     ItemInfo ii = infoForChild(child);
-                    if (ii != null && ii.position == curItem) {
+                    if (ii != null && ii.id.equals(curItemId)) {
                         child.addFocusables(views, direction, focusableMode);
                     }
                 }
@@ -1544,7 +1645,7 @@ public class StreamViewPager extends ViewGroup {
             final View child = getChildAt(i);
             if (child.getVisibility() == VISIBLE) {
                 ItemInfo ii = infoForChild(child);
-                if (ii != null && ii.position == curItem) {
+                if (ii != null && ii.equals(curItemId)) {
                     child.addTouchables(views);
                 }
             }
@@ -1573,7 +1674,7 @@ public class StreamViewPager extends ViewGroup {
             View child = getChildAt(i);
             if (child.getVisibility() == VISIBLE) {
                 ItemInfo ii = infoForChild(child);
-                if (ii != null && ii.position == curItem) {
+                if (ii != null && ii.equals(curItemId)) {
                     if (child.requestFocus(direction, previouslyFocusedRect)) {
                         return true;
                     }
@@ -1592,7 +1693,7 @@ public class StreamViewPager extends ViewGroup {
             final View child = getChildAt(i);
             if (child.getVisibility() == VISIBLE) {
                 final ItemInfo ii = infoForChild(child);
-                if (ii != null && ii.position == curItem &&
+                if (ii != null && ii.equals(curItemId) &&
                         child.dispatchPopulateAccessibilityEvent(event)) {
                     return true;
                 }

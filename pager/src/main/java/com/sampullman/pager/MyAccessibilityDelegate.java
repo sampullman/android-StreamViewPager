@@ -7,10 +7,10 @@ import android.support.v4.view.accessibility.AccessibilityNodeInfoCompat;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 
-public class MyAccessibilityDelegate extends AccessibilityDelegateCompat {
-    private StreamViewPager pager;
+public class MyAccessibilityDelegate<T> extends AccessibilityDelegateCompat {
+    private StreamViewPager<T> pager;
 
-    public MyAccessibilityDelegate(StreamViewPager pager) {
+    public MyAccessibilityDelegate(StreamViewPager<T> pager) {
         this.pager = pager;
     }
 
@@ -24,14 +24,15 @@ public class MyAccessibilityDelegate extends AccessibilityDelegateCompat {
         super.onInitializeAccessibilityNodeInfo(host, info);
 
         info.setClassName(StreamViewPager.class.getName());
-        PagerAdapter adapter = pager.getAdapter();
-        info.setScrollable(adapter != null && adapter.getCount() > 1);
+        StreamViewAdapter<T> adapter = pager.getAdapter();
+        info.setScrollable(adapter != null && adapter.hasAtLeastOneItem());
 
-        int curItem = pager.getCurrentItem();
-        if (adapter != null && curItem >= 0 && curItem < adapter.getCount() - 1) {
+        T curItem = pager.getCurrentViewId();
+
+        if (adapter != null && adapter.hasNext(curItem)) {
             info.addAction(AccessibilityNodeInfoCompat.ACTION_SCROLL_FORWARD);
         }
-        if (adapter != null && curItem > 0 && curItem < adapter.getCount()) {
+        if (adapter != null && adapter.hasPrev(curItem)) {
             info.addAction(AccessibilityNodeInfoCompat.ACTION_SCROLL_BACKWARD);
         }
     }
@@ -40,19 +41,25 @@ public class MyAccessibilityDelegate extends AccessibilityDelegateCompat {
         if (super.performAccessibilityAction(host, action, args)) {
             return true;
         }
-        PagerAdapter adapter = pager.getAdapter();
-        int curItem = pager.getCurrentItem();
+        StreamViewAdapter<T> adapter = pager.getAdapter();
+        T curItem = pager.getCurrentViewId();
         switch (action) {
             case AccessibilityNodeInfoCompat.ACTION_SCROLL_FORWARD: {
-                if (adapter != null && curItem >= 0 && curItem < adapter.getCount() - 1) {
-                    pager.setCurrentItem(curItem + 1);
-                    return true;
+                if(adapter != null) {
+                    T nextId = adapter.nextId(curItem);
+                    if (nextId != null) {
+                        pager.setCurrentItem(nextId);
+                        return true;
+                    }
                 }
             } return false;
             case AccessibilityNodeInfoCompat.ACTION_SCROLL_BACKWARD: {
-                if (adapter != null && curItem > 0 && curItem < adapter.getCount()) {
-                    pager.setCurrentItem(curItem - 1);
-                    return true;
+                if(adapter != null) {
+                    T prevId = adapter.prevId(curItem);
+                    if (prevId != null) {
+                        pager.setCurrentItem(prevId);
+                        return true;
+                    }
                 }
             } return false;
         }

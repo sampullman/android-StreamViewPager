@@ -14,16 +14,17 @@ import android.widget.TextView;
 
 import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
 
+import com.sampullman.pager.StreamViewAdapter;
 import com.sampullman.pager.StreamViewPager;
 
 public class InfinitePagerActivity extends AppCompatActivity {
-    StreamViewPager pager;
+    StreamViewPager<Integer> pager;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        pager = new StreamViewPager(this);
+        pager = new StreamViewPager<>(this);
         pager.setLayoutParams(new ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT));
 
         pager.setAdapter(new InfinitePagerAdapter(this));
@@ -34,7 +35,7 @@ public class InfinitePagerActivity extends AppCompatActivity {
         return new OnClickListener() {
             @Override
             public void onClick(View view) {
-                pager.setCurrentItem(pager.getCurrentItem()+direction);
+                pager.setCurrentItem(pager.getCurrentViewId()+direction);
             }
         };
     }
@@ -49,7 +50,7 @@ public class InfinitePagerActivity extends AppCompatActivity {
         return b;
     }
 
-    public class InfinitePagerAdapter extends PagerAdapter {
+    public class InfinitePagerAdapter extends StreamViewAdapter<Integer> {
 
         private Context context;
 
@@ -58,16 +59,16 @@ public class InfinitePagerActivity extends AppCompatActivity {
         }
 
         @Override
-        public Object instantiateItem(ViewGroup collection, int position) {
+        public Object instantiateItem(ViewGroup container, Integer id) {
             LinearLayout layout = new LinearLayout(context);
             layout.setLayoutParams(new ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT));
-            collection.addView(layout);
+            container.addView(layout);
 
             layout.addView(pagerButton("<", -1));
 
             TextView tv = new TextView(context);
             tv.setLayoutParams(new LinearLayout.LayoutParams(0, MATCH_PARENT, 1));
-            tv.setText(String.format("Page %d", position+1));
+            tv.setText(String.format("Page %d", id));
             tv.setTextSize(24);
             tv.setGravity(Gravity.CENTER);
             layout.addView(tv);
@@ -76,24 +77,18 @@ public class InfinitePagerActivity extends AppCompatActivity {
             return layout;
         }
 
-        @Override
-        public void destroyItem(ViewGroup collection, int position, Object view) {
-            collection.removeView((View) view);
+        public Integer initialViewId() {
+            return 0;
         }
 
         @Override
-        public int getCount() {
-            return 10;
+        public Integer nextId(Integer fromId) {
+            return fromId + 1;
         }
 
         @Override
-        public boolean isViewFromObject(View view, Object object) {
-            return view == object;
-        }
-
-        @Override
-        public CharSequence getPageTitle(int position) {
-            return String.format("Page %d", position+1);
+        public Integer prevId(Integer fromId) {
+            return fromId - 1;
         }
 
     }

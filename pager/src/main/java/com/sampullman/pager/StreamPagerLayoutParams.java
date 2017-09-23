@@ -15,9 +15,6 @@ public class StreamPagerLayoutParams extends ViewGroup.LayoutParams {
             android.R.attr.layout_gravity
     };
 
-    // true if this view is a decoration and not supplied by the adapter.
-    public boolean isDecor;
-
     /**
      * Gravity setting for use on decor views only:
      * Where to position the view page within the overall StreamViewPager
